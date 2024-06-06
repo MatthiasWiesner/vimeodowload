@@ -29,3 +29,11 @@ Commands:
   download-videos  Download all your videos from vimeo
   list-videos      List all your videos at vimeo
 ```
+
+The script connects to vimeo and fetches all video metadata. Vimeo returns the
+metadata in pages. You can adjust how many video files per page are returned.
+(`--per-page`, default 25).
+
+Downloading and listing are processed in a thread pool. The thread pool
+max-worker size is the per-page size. The download happens in chunks (read and
+written). You can adjust the chunk size (`--chunk-size` in Bytes, default 50MB)
