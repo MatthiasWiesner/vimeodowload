@@ -20,10 +20,8 @@ Currenly two methods are possible
 Usage: vimeodownload.py [OPTIONS] COMMAND [ARGS]...
 
 Options:
-  -k, --key TEXT     Vimeo client-id  [required]
-  -s, --secret TEXT  Vimeo client-secret  [required]
-  -t, --token TEXT   Vimeo client-token  [required]
-  --help             Show this message and exit.
+  -t, --token TEXT  Vimeo client-token  [required]
+  --help            Show this message and exit.
 
 Commands:
   download-videos  Download all your videos from vimeo

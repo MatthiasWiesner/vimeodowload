@@ -97,8 +97,7 @@ def list_videos(ctx, per_page):
 def download_videos(ctx, backuppath, per_page, chunk_size):
     """Download all your videos from vimeo
 
-    it will printed the vimeo-id, video name and 
-    the link to the biggest file in size
+    downloads the link to the biggest file in size
     """
     def _download_file(files_info):
         vimeo_id = str(files_info['uri'].split('/')[-1])
