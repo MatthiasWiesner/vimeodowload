@@ -13,8 +13,8 @@ logger.addHandler(console_handler)
 
 
 class VimeoDownloader(object):
-    def __init__(self, key, secret, token):
-        self.client = vimeo.VimeoClient(key=key, secret=secret, token=token)
+    def __init__(self, token):
+        self.client = vimeo.VimeoClient(token=token)
 
     def iterate_pages(self, file_process_handler, per_page=25):
         self.file_process_handler = file_process_handler
@@ -29,6 +29,11 @@ class VimeoDownloader(object):
 
     def _download_page(self, page):
         current_result = self.client.get(page).json()
+        if 'error' in current_result:
+            logger.error(current_result['error'])
+            logger.error(current_result['developer_message'])
+            return False
+
         for files_info in current_result['data']:
             if not len(files_info['files']):
                 continue
@@ -37,12 +42,10 @@ class VimeoDownloader(object):
 
 
 @click.group()
-@click.option('-k', '--key', help='Vimeo client-id', required=True)
-@click.option('-s', '--secret', help='Vimeo client-secret', required=True)
 @click.option('-t', '--token', help='Vimeo client-token', required=True)
 @click.pass_context
-def cli(ctx, key, secret, token):
-    ctx.obj = VimeoDownloader(key, secret, token)
+def cli(ctx, token):
+    ctx.obj = VimeoDownloader(token)
 
 
 @cli.command()
