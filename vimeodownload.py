@@ -41,7 +41,7 @@ class VimeoDownloader(object):
         tasks = []
 
         try:
-            current_result = self.client.get(page).json()
+            current_result = self.client.get(page, timeout=(30,120)).json()
             if 'error' in current_result:
                 logger.error(current_result['error'])
                 logger.error(current_result['developer_message'])
