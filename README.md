@@ -20,8 +20,10 @@ Currenly two methods are possible
 Usage: vimeodownload.py [OPTIONS] COMMAND [ARGS]...
 
 Options:
-  -t, --token TEXT  Vimeo client-token  [required]
-  --help            Show this message and exit.
+  -t, --token TEXT                Vimeo client-token  [required]
+  -v, --verbosity [debug|info|warning|error|critical]
+                                  Logging verbosity
+  --help                          Show this message and exit.
 
 Commands:
   download-videos  Download all your videos from vimeo
@@ -35,3 +37,7 @@ metadata in pages. You can adjust how many video files per page are returned.
 Downloading and listing are processed in a thread pool. The thread pool
 max-worker size is the per-page size. The download happens in chunks (read and
 written). You can adjust the chunk size (`--chunk-size` in Bytes, default 50MB)
+
+The results can be filtered by adding a query parameter. E.g:
+`python vimeodownload.py -t {xxxxxxx} list-videos --query teachonline` will only list videos with "teachonline" in the videos name.
+(same for downloading)
