@@ -30,7 +30,7 @@ class VimeoDownloader(object):
 
         next_page = f'/me/videos?per_page={per_page}&page=1&fields=name,files,uri'
         if query:
-            next_page = f'/me/videos?per_page={per_page}&page=1&fields=name,files,uri&query={query}'
+            next_page = f'{next_page}&query={query}'
 
         next_page = self._download_page(next_page, per_page)
         while next_page:
