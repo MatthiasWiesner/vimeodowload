@@ -28,13 +28,29 @@ class VimeoDownloader(object):
     def iterate_pages(self, file_process_handler, per_page=25, query=None):
         self.file_process_handler = file_process_handler
 
-        next_page = f'/me/videos?per_page={per_page}&page=1&fields=name,files,uri'
+        next_page = f'/me/videos?per_page={per_page}&page=1&fields=name,files,uri,metadata.connections.texttracks.uri'
         if query:
             next_page = f'{next_page}&query={query}'
 
         next_page = self._download_page(next_page, per_page)
         while next_page:
             next_page = self._download_page(next_page, per_page)
+
+    def _request_textracks(self, url):
+        texttracks = []
+
+        def _texttrack_link(url):
+            r = self.client.get(url, timeout=(30,120)).json()
+            if not r['data'] or not r['data'][0]['active']:
+                return
+            texttracks.append({'name': r['data'][0]['name'], 'link': r['data'][0]['link']})
+            return r['paging']['next']
+
+        next = url
+        while next:
+            next = _texttrack_link(next)
+
+        return texttracks
 
     def _download_page(self, page, per_page):
         executor = ThreadPoolExecutor(max_workers=per_page)
@@ -54,10 +70,13 @@ class VimeoDownloader(object):
             # only in debug mode
             debug_json(current_result)
 
-            for files_info in current_result['data']:
-                if not len(files_info['files']):
+            for vimeo_info in current_result['data']:
+                if not 'files' in vimeo_info or not len(vimeo_info['files']):
                     continue
-                task = executor.submit(self.file_process_handler, files_info)
+
+                vimeo_info['texttracks'] = self._request_textracks(vimeo_info['metadata']['connections']['texttracks']['uri'])
+
+                task = executor.submit(self.file_process_handler, vimeo_info)
                 tasks.append(task)
             wait(tasks)
 
@@ -96,11 +115,15 @@ def list_videos(ctx, per_page, query):
     it will printed the vimeo-id, video name and 
     the link to the biggest file in size
     """
-    def _list_file(files_info):
-        vimeo_id = str(files_info['uri'].split('/')[-1])
-        max_size_file_info = max(files_info['files'], key=lambda x: x['size'])
-        logger.info(f'{"Vimeo-ID:":>12} {vimeo_id} - {files_info["name"]} - {max_size_file_info["link"]}')
-        return f"Finished {vimeo_id} {files_info['name']}"
+    def _list_file(vimeo_info):
+        vimeo_id = str(vimeo_info['uri'].split('/')[-1])
+        max_size_file_info = max(vimeo_info['files'], key=lambda x: x['size'])
+        logger.info(f'{"Vimeo-ID:":>10} {vimeo_id} - {vimeo_info["name"]} - {max_size_file_info["link"]}')
+
+        for texttrack in vimeo_info['texttracks']:
+            logger.info(f'{"texttrack:":>14} {texttrack["link"]}')
+
+        return f"Finished {vimeo_id} {vimeo_info['name']}"
 
     ctx.obj.iterate_pages(_list_file, per_page, query)
 
@@ -116,17 +139,31 @@ def download_videos(ctx, backuppath, per_page, chunk_size, query):
 
     downloads the link to the biggest file in size
     """
-    def _download_file(files_info):
-        vimeo_id = str(files_info['uri'].split('/')[-1])
-        max_size_file_info = max(files_info['files'], key=lambda x: x['size'])
+    def _download_file(vimeo_info):
+        vimeo_id = str(vimeo_info['uri'].split('/')[-1])
+        max_size_file_info = max(vimeo_info['files'], key=lambda x: x['size'])
         ftype = max_size_file_info['type'].split('/')[-1]
-        backupfile = os.path.join(backuppath, f"{files_info['name']}.{ftype}")
 
-        with open(backupfile, 'wb') as bf:
-            logger.info(f"Downloading {vimeo_id}: {backupfile}")
+        basepath = os.path.join(backuppath, vimeo_info['name'])
+        os.path.exists(basepath) or os.mkdir(basepath)
+
+        videofile = os.path.join(basepath, f"{vimeo_info['name']}.{ftype}")
+        with open(videofile, 'wb') as bf:
+            logger.info(f"Downloaded {vimeo_id}: {videofile}")
             response = requests.get(max_size_file_info['link'], stream=True)
             for chunk in response.iter_content(chunk_size=chunk_size):
                 bf.write(chunk)
+
+        if 'texttracks' in vimeo_info:
+            texttracks_dir = os.path.join(basepath, 'texttracks')
+            os.path.exists(texttracks_dir) or os.mkdir(texttracks_dir)
+            for texttrack in vimeo_info['texttracks']:
+                logger.info(f"Downloading {texttrack['name']}")
+                texttrackfile = os.path.join(texttracks_dir, texttrack['name'])
+                with open(texttrackfile, 'wb') as vtt:
+                    response = requests.get(texttrack['link'], stream=True)
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        vtt.write(chunk)
 
     ctx.obj.iterate_pages(_download_file, per_page, query)
 
