@@ -1,10 +1,12 @@
 import os
+import json
+import boto3
 import click
-import requests
 import vimeo
 import logging
-import json
+import requests
 
+from smart_open import open
 from concurrent.futures import ThreadPoolExecutor, wait
 
 
@@ -18,12 +20,45 @@ def debug_json(data):
 
 
 class VimeoDownloader(object):
-    def __init__(self, token, verbosity=logging.INFO):
+    def __init__(self, token, backuppath, s3_url, s3_bucket, s3_access_key, s3_secret_key, verbosity=logging.INFO):
         logger.setLevel(verbosity)
         console_handler = logging.StreamHandler()
         logger.addHandler(console_handler)
 
+        self.s3_mode = False
         self.client = vimeo.VimeoClient(token=token)
+
+        self.backuppath = backuppath
+
+        if s3_url and s3_bucket and s3_access_key and s3_secret_key:
+            self.s3_mode = True
+            self.s3_url = s3_url
+            self.s3_bucket = f's3://{s3_bucket}'
+            self.s3_access_key = s3_access_key
+            self.s3_secret_key = s3_secret_key
+
+    def get_filehandler(self, path, mode='wb'):
+        if self.s3_mode:
+            return self._s3_filehandler(path)
+        return self._disk_filehandler(path, mode)
+
+    def _s3_filehandler(self, path):
+        session = boto3.session.Session()
+        s3_client = session.client(
+            service_name='s3',
+            aws_access_key_id=self.s3_access_key,
+            aws_secret_access_key=self.s3_secret_key,
+            region_name='',
+            endpoint_url=self.s3_url
+        )
+        path = f'{self.s3_bucket}/{path}'
+        # mode is always bytes, always!
+        return open(path, mode='wb', transport_params={'client': s3_client})
+
+    def _disk_filehandler(self, path, mode='w'):
+        path = os.path.join(self.backuppath, path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return open(path, mode)
 
     def iterate_pages(self, file_process_handler, per_page=25, query=None):
         self.file_process_handler = file_process_handler
@@ -93,8 +128,13 @@ class VimeoDownloader(object):
 @click.group()
 @click.option('-t', '--token', help='Vimeo client-token', required=True)
 @click.option('-v', '--verbosity', type=click.Choice(['debug', 'info', 'warning', 'error', 'critical']), default='info', help='Logging verbosity')
+@click.option('-b', '--backuppath', default='/tmp', help="Local path for downloading")
+@click.option('--s3_url', default=None, help="S3 host")
+@click.option('--s3_bucket', default=None, help="S3 bucket")
+@click.option('--s3_access_key', default=None, help="S3 access key")
+@click.option('--s3_secret_key', default=None, help="S3 secret key")
 @click.pass_context
-def cli(ctx, token, verbosity):
+def cli(ctx, token, verbosity, backuppath, s3_url, s3_bucket, s3_access_key, s3_secret_key):
     verbosity_map = {
         'debug': logging.DEBUG,
         'info': logging.INFO,
@@ -102,7 +142,7 @@ def cli(ctx, token, verbosity):
         'error': logging.ERROR,
         'critical': logging.CRITICAL
     }
-    ctx.obj = VimeoDownloader(token, verbosity_map[verbosity])
+    ctx.obj = VimeoDownloader(token, backuppath, s3_url, s3_bucket, s3_access_key, s3_secret_key, verbosity_map[verbosity])
 
 
 @cli.command()
@@ -129,44 +169,93 @@ def list_videos(ctx, per_page, query):
 
 
 @cli.command()
-@click.option('-b', '--backuppath', required=True, help="Local path for downloading")
 @click.option('-p', '--per-page', default=25, help="Determine how many files per page should be downloaded")
 @click.option('-c', '--chunk-size', default=52428800, help="Downloading chunk size, default 50MB")
 @click.option('-q', '--query', default=None, help="Filter query")
 @click.pass_context
-def download_videos(ctx, backuppath, per_page, chunk_size, query):
+def download_videos(ctx, per_page, chunk_size, query):
     """Download all your videos from vimeo
 
     downloads the link to the biggest file in size
     """
+    vimeo = ctx.obj
+
     def _download_file(vimeo_info):
+        basepath = vimeo_info['name']
+        infofile = os.path.join(basepath, f"{vimeo_info['name']}.json")
+
+        if vimeo.s3_mode:
+            with vimeo.get_filehandler(infofile) as f:
+                logger.info(f"Save info file: {vimeo_info['name']}.json")
+                f.write(bytes(json.dumps(vimeo_info), 'utf-8'))
+        else:
+            with vimeo.get_filehandler(infofile, 'w') as f:
+                logger.info(f"Save info file: {vimeo_info['name']}.json")
+                f.write(json.dumps(vimeo_info))
+
         vimeo_id = str(vimeo_info['uri'].split('/')[-1])
         max_size_file_info = max(vimeo_info['files'], key=lambda x: x['size'])
         ftype = max_size_file_info['type'].split('/')[-1]
-
-        basepath = os.path.join(backuppath, vimeo_info['name'])
-        os.path.exists(basepath) or os.mkdir(basepath)
-
         videofile = os.path.join(basepath, f"{vimeo_info['name']}.{ftype}")
-        with open(videofile, 'wb') as bf:
-            logger.info(f"Downloaded {vimeo_id}: {videofile}")
-            response = requests.get(max_size_file_info['link'], stream=True)
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                bf.write(chunk)
+
+        try:
+            with vimeo.get_filehandler(videofile, 'wb') as bf:
+                logger.info(f"Downloading {vimeo_id}: {videofile}")
+
+                response = requests.get(max_size_file_info['link'], stream=True)
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    bf.write(chunk)
+
+            if 'texttracks' in vimeo_info:
+                for texttrack in vimeo_info['texttracks']:
+                    logger.info(f"Downloading {texttrack['name']}")
+
+                    texttrackfile = os.path.join(basepath, 'texttracks', texttrack['name'])
+                    with vimeo.get_filehandler(texttrackfile, 'wb') as vtt:
+                        response = requests.get(texttrack['link'], stream=True)
+                        for chunk in response.iter_content(chunk_size=chunk_size):
+                            vtt.write(chunk)
+        except Exception as e:
+            print(e)
+
+    vimeo.iterate_pages(_download_file, per_page, query)
+
+
+@cli.command()
+@click.option('-p', '--per-page', default=25, help="Determine how many files per page should be downloaded")
+@click.option('-c', '--chunk-size', default=52428800, help="Downloading chunk size, default 50MB")
+@click.option('-q', '--query', default=None, help="Filter query")
+@click.pass_context
+def download_subtitles(ctx, per_page, chunk_size, query):
+    """Download all your subtitles (texttracks) from vimeo
+
+    """
+    vimeo = ctx.obj
+
+    def _download_subtitles(vimeo_info):
+        basepath = vimeo_info['name']
+        infofile = os.path.join(basepath, f"{vimeo_info['name']}.json")
+
+        if vimeo.s3_mode:
+            with vimeo.get_filehandler(infofile) as f:
+                logger.info(f"Save info file: {vimeo_info['name']}.json")
+                f.write(bytes(json.dumps(vimeo_info), 'utf-8'))
+        else:
+            with vimeo.get_filehandler(infofile, 'w') as f:
+                logger.info(f"Save info file: {vimeo_info['name']}.json")
+                f.write(json.dumps(vimeo_info))
 
         if 'texttracks' in vimeo_info:
-            texttracks_dir = os.path.join(basepath, 'texttracks')
-            os.path.exists(texttracks_dir) or os.mkdir(texttracks_dir)
             for texttrack in vimeo_info['texttracks']:
                 logger.info(f"Downloading {texttrack['name']}")
-                texttrackfile = os.path.join(texttracks_dir, texttrack['name'])
-                with open(texttrackfile, 'wb') as vtt:
+
+                texttrackfile = os.path.join(basepath, 'texttracks', texttrack['name'])
+                with vimeo.get_filehandler(texttrackfile, 'wb') as vtt:
                     response = requests.get(texttrack['link'], stream=True)
                     for chunk in response.iter_content(chunk_size=chunk_size):
                         vtt.write(chunk)
 
-    ctx.obj.iterate_pages(_download_file, per_page, query)
-
+    vimeo.iterate_pages(_download_subtitles, per_page, query)
 
 if __name__ == '__main__':
     cli()
