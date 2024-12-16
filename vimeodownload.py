@@ -216,7 +216,7 @@ def download_videos(ctx, per_page, chunk_size, query):
                         for chunk in response.iter_content(chunk_size=chunk_size):
                             vtt.write(chunk)
         except Exception as e:
-            print(e)
+            logger.error(f"An exception occured: {e}")
 
     vimeo.iterate_pages(_download_file, per_page, query)
 
